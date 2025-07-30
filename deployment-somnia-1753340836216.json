@@ -1,0 +1,22 @@
+{
+  "contractName": "Sone",
+  "contractAddress": "0x9eF2904f62FB7014682f31A4a6A3F433f32FB8e5",
+  "deployerAddress": "0x9153FCE454B57eD477c0216100B2774f1DdDb972",
+  "network": "somnia",
+  "chainId": "50312",
+  "blockNumber": "131438276",
+  "deploymentParams": {
+    "owner": "0x9153FCE454B57eD477c0216100B2774f1DdDb972",
+    "roundDuration": 120,
+    "valuePerEntry": "0.01 STT",
+    "protocolFeeRecipient": "0x9153FCE454B57eD477c0216100B2774f1DdDb972",
+    "protocolFeeBp": 300,
+    "maximumNumberOfParticipantsPerRound": 100,
+    "keeper": "0x9153FCE454B57eD477c0216100B2774f1DdDb972"
+  },
+  "transactionHash": "0x24e3d78562dc08422daef6941b567b08dd5b3d2dc96c80f05622bd60769abe1e",
+  "explorerUrl": "https://explorer.somnia.network/tx/0x24e3d78562dc08422daef6941b567b08dd5b3d2dc96c80f05622bd60769abe1e",
+  "timestamp": "2025-07-24T07:07:16.215Z",
+  "gasUsed": "679500",
+  "deploymentCost": "0.004077 STT"
+}

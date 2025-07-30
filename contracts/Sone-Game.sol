@@ -80,6 +80,11 @@ contract Sone is Ownable, ReentrancyGuard, Pausable {
     mapping(address => SupportedToken) public supportedTokens;
     address[] public tokenList;
 
+    // Native token support (use address(0) to represent native token)
+    bool public nativeTokenSupported = false;
+    uint256 public nativeTokenMinDeposit = 0;
+    uint256 public nativeTokenRatio = 10000; // 1:1 ratio by default
+
     event Deposited(
         address indexed depositor,
         uint256 roundId,
@@ -128,6 +133,17 @@ contract Sone is Ownable, ReentrancyGuard, Pausable {
         address indexed to,
         uint256 amount
     );
+    event EmergencyWithdrawalExecuted(
+        address indexed to,
+        address[] tokens,
+        uint256[] withdrawnAmounts,
+        bool pauseContract
+    );
+    event NativeTokenConfigUpdated(
+        bool isSupported,
+        uint256 minDeposit,
+        uint256 ratio
+    );
 
     /**
      * @notice Constructor to initialize the Sone contract
@@ -159,31 +175,51 @@ contract Sone is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @notice Deposit function for ERC20 tokens only
-     * @param token ERC20 token address
-     * @param amount Amount to deposit
+     * @notice Deposit function for both ERC20 tokens and native token
+     * @param token Token address (use address(0) for native token)
+     * @param amount Amount to deposit (ignored for native token, use msg.value instead)
      */
     function deposit(
         address token,
         uint256 amount
-    ) external nonReentrant whenNotPaused {
-        require(
-            token != address(0),
-            "Native token is not supported, only ERC20 allowed"
-        );
-        require(amount > 0, "ERC20 deposit amount must be greater than 0");
+    ) external payable nonReentrant whenNotPaused {
+        if (token == address(0)) {
+            // Native token deposit
+            require(nativeTokenSupported, "Native token is not supported");
+            require(
+                msg.value > 0,
+                "Native token deposit amount must be greater than 0"
+            );
+            require(
+                msg.value >= nativeTokenMinDeposit,
+                "Native token amount below minimum deposit"
+            );
 
-        SupportedToken memory tokenInfo = supportedTokens[token];
-        require(
-            tokenInfo.isSupported && tokenInfo.isActive,
-            "Token not supported or inactive"
-        );
-        require(amount >= tokenInfo.minDeposit, "Amount below minimum deposit");
+            uint256 normalizedValue = _normalizeNativeTokenValue(msg.value);
+            _processDeposit(token, msg.value, normalizedValue);
+        } else {
+            // ERC20 token deposit
+            require(
+                msg.value == 0,
+                "Do not send native token for ERC20 deposits"
+            );
+            require(amount > 0, "ERC20 deposit amount must be greater than 0");
 
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+            SupportedToken memory tokenInfo = supportedTokens[token];
+            require(
+                tokenInfo.isSupported && tokenInfo.isActive,
+                "Token not supported or inactive"
+            );
+            require(
+                amount >= tokenInfo.minDeposit,
+                "Amount below minimum deposit"
+            );
 
-        uint256 normalizedValue = _normalizeTokenValue(token, amount);
-        _processDeposit(token, amount, normalizedValue);
+            IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+
+            uint256 normalizedValue = _normalizeTokenValue(token, amount);
+            _processDeposit(token, amount, normalizedValue);
+        }
     }
 
     /**
@@ -292,8 +328,20 @@ contract Sone is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @notice Add a new supported token
-     * @param token Token address
+     * @notice Normalize native token value to SONE equivalent with depeg ratio
+     * @param amount Native token amount (already in 18 decimals)
+     * @return Normalized value in SONE equivalent
+     */
+    function _normalizeNativeTokenValue(
+        uint256 amount
+    ) internal view returns (uint256) {
+        // Native token is assumed to be 18 decimals (ETH, BNB, MATIC, etc.)
+        return (amount * nativeTokenRatio) / 10000;
+    }
+
+    /**
+     * @notice Add a new supported token (ERC20 only, use setNativeTokenConfig for native token)
+     * @param token Token address (cannot be address(0))
      * @param decimals Token decimals
      * @param minDeposit Minimum deposit amount
      * @param ratio Ratio to SONE in basis points (10000 = 1:1)
@@ -304,7 +352,10 @@ contract Sone is Ownable, ReentrancyGuard, Pausable {
         uint256 minDeposit,
         uint256 ratio
     ) external onlyOwner {
-        require(token != address(0), "Native token is not supported");
+        require(
+            token != address(0),
+            "Use setNativeTokenConfig for native token"
+        );
         require(!supportedTokens[token].isSupported, "Token already supported");
         require(ratio > 0 && ratio <= 50000, "Invalid ratio");
 
@@ -347,11 +398,14 @@ contract Sone is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @notice Remove a supported token
-     * @param token Token address to remove
+     * @notice Remove a supported token (ERC20 only, use setNativeTokenConfig to disable native token)
+     * @param token Token address to remove (cannot be address(0))
      */
     function removeSupportedToken(address token) external onlyOwner {
-        require(token != address(0), "Native token is not supported");
+        require(
+            token != address(0),
+            "Use setNativeTokenConfig to disable native token"
+        );
         require(supportedTokens[token].isSupported, "Token not supported");
 
         delete supportedTokens[token];
@@ -369,6 +423,26 @@ contract Sone is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
+     * @notice Configure native token support
+     * @param isSupported Whether native token is supported
+     * @param minDeposit Minimum deposit amount for native token
+     * @param ratio Ratio to SONE in basis points (10000 = 1:1)
+     */
+    function setNativeTokenConfig(
+        bool isSupported,
+        uint256 minDeposit,
+        uint256 ratio
+    ) external onlyOwner {
+        require(ratio > 0 && ratio <= 50000, "Invalid ratio");
+
+        nativeTokenSupported = isSupported;
+        nativeTokenMinDeposit = minDeposit;
+        nativeTokenRatio = ratio;
+
+        emit NativeTokenConfigUpdated(isSupported, minDeposit, ratio);
+    }
+
+    /**
      * @notice Get all supported tokens
      * @return Array of supported token addresses
      */
@@ -381,8 +455,30 @@ contract Sone is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
+     * @notice Get native token configuration
+     * @return isSupported Whether native token is supported
+     * @return minDeposit Minimum deposit amount for native token
+     * @return ratio Ratio to SONE in basis points
+     */
+    function getNativeTokenConfig()
+        external
+        view
+        returns (bool isSupported, uint256 minDeposit, uint256 ratio)
+    {
+        return (nativeTokenSupported, nativeTokenMinDeposit, nativeTokenRatio);
+    }
+
+    /**
+     * @notice Fallback function to prevent accidental native token sends
+     * @dev Use deposit() function with address(0) as token parameter instead
+     */
+    receive() external payable {
+        revert("Use deposit() function with address(0) as token parameter");
+    }
+
+    /**
      * @notice Emergency function to rescue funds from the contract
-     * @param token Token address (không còn address(0))
+     * @param token Token address (use address(0) for native token)
      * @param to Recipient address
      * @param amount Amount to rescue
      */
@@ -394,9 +490,14 @@ contract Sone is Ownable, ReentrancyGuard, Pausable {
         require(to != address(0), "Invalid recipient address");
         require(amount > 0, "Amount must be greater than 0");
 
-        // Xoá hoàn toàn rescue MON, chỉ còn rescue ERC20
         if (token == address(0)) {
-            revert("Native token is not supported");
+            // Rescue native token
+            require(
+                address(this).balance >= amount,
+                "Insufficient native token balance"
+            );
+            (bool success, ) = payable(to).call{value: amount}("");
+            require(success, "Native token transfer failed");
         } else {
             // Rescue ERC20 token
             IERC20 tokenContract = IERC20(token);
@@ -411,15 +512,132 @@ contract Sone is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @notice Internal function to transfer tokens (SONE or ERC20)
+     * @notice Emergency function to withdraw ALL tokens from the contract
+     * @dev This is a nuclear option that should only be used in extreme emergencies
+     * @param to Recipient address to send all tokens to
+     * @param pauseContract Whether to pause the contract after withdrawal
+     */
+    function emergencyWithdrawAll(
+        address to,
+        bool pauseContract
+    ) external onlyOwner {
+        require(to != address(0), "Invalid recipient address");
+
+        // Get all supported tokens
+        address[] memory allTokens = tokenList;
+        uint256[] memory withdrawnAmounts = new uint256[](allTokens.length);
+
+        // Pause contract first if requested
+        if (pauseContract && !paused()) {
+            _pause();
+        }
+
+        // Withdraw native token if supported
+        if (nativeTokenSupported && address(this).balance > 0) {
+            uint256 nativeBalance = address(this).balance;
+            (bool success, ) = payable(to).call{value: nativeBalance}("");
+            require(success, "Native token transfer failed");
+            emit FundsRescued(address(0), to, nativeBalance);
+        }
+
+        // Withdraw all supported ERC20 tokens
+        for (uint256 i = 0; i < allTokens.length; i++) {
+            address token = allTokens[i];
+            IERC20 tokenContract = IERC20(token);
+            uint256 balance = tokenContract.balanceOf(address(this));
+
+            if (balance > 0) {
+                tokenContract.safeTransfer(to, balance);
+                withdrawnAmounts[i] = balance;
+                emit FundsRescued(token, to, balance);
+            }
+        }
+
+        emit EmergencyWithdrawalExecuted(
+            to,
+            allTokens,
+            withdrawnAmounts,
+            pauseContract
+        );
+    }
+
+    /**
+     * @notice Emergency function to withdraw specific tokens in bulk
+     * @dev More controlled emergency withdrawal for specific tokens
+     * @param tokens Array of token addresses to withdraw
+     * @param to Recipient address
+     * @param pauseContract Whether to pause the contract after withdrawal
+     */
+    function emergencyWithdrawTokens(
+        address[] calldata tokens,
+        address to,
+        bool pauseContract
+    ) external onlyOwner {
+        require(to != address(0), "Invalid recipient address");
+        require(tokens.length > 0, "No tokens specified");
+
+        uint256[] memory withdrawnAmounts = new uint256[](tokens.length);
+
+        // Pause contract first if requested
+        if (pauseContract && !paused()) {
+            _pause();
+        }
+
+        // Withdraw specified tokens
+        for (uint256 i = 0; i < tokens.length; i++) {
+            address token = tokens[i];
+
+            if (token == address(0)) {
+                // Withdraw native token
+                require(nativeTokenSupported, "Native token is not supported");
+                uint256 balance = address(this).balance;
+                if (balance > 0) {
+                    (bool success, ) = payable(to).call{value: balance}("");
+                    require(success, "Native token transfer failed");
+                    withdrawnAmounts[i] = balance;
+                    emit FundsRescued(token, to, balance);
+                }
+            } else {
+                // Withdraw ERC20 token
+                IERC20 tokenContract = IERC20(token);
+                uint256 balance = tokenContract.balanceOf(address(this));
+
+                if (balance > 0) {
+                    tokenContract.safeTransfer(to, balance);
+                    withdrawnAmounts[i] = balance;
+                    emit FundsRescued(token, to, balance);
+                }
+            }
+        }
+
+        emit EmergencyWithdrawalExecuted(
+            to,
+            tokens,
+            withdrawnAmounts,
+            pauseContract
+        );
+    }
+
+    /**
+     * @notice Internal function to transfer tokens (native token or ERC20)
      */
     function _transferTokens(
         address token,
         address to,
         uint256 amount
     ) internal {
-        require(token != address(0), "Native token is not supported");
-        IERC20(token).safeTransfer(to, amount);
+        if (token == address(0)) {
+            // Transfer native token
+            require(
+                address(this).balance >= amount,
+                "Insufficient native token balance"
+            );
+            (bool success, ) = payable(to).call{value: amount}("");
+            require(success, "Native token transfer failed");
+        } else {
+            // Transfer ERC20 token
+            IERC20(token).safeTransfer(to, amount);
+        }
     }
 
     /**
